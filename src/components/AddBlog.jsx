@@ -54,6 +54,7 @@ const AddBlog = ({ onSuccess, onCancel, isOpen, onClose }) => {
   });
   
   const [expandedSections, setExpandedSections] = useState({
+    aiChat: true,
     basic: true,
     content: true,
     media: true,
@@ -62,9 +63,16 @@ const AddBlog = ({ onSuccess, onCancel, isOpen, onClose }) => {
 
   const modalContentRef = useRef(null);
   const previewUrls = useRef(new Set());
-  const outlineGeneratedRef = useRef(false);
-  const autoGenerateTimeoutRef = useRef(null);
-  const isAutoGeneratingRef = useRef(false); // Add ref to track auto-generation state
+  const chatEndRef = useRef(null);
+
+  // ============ AI CHAT BOX ============
+  // Replaces the old "type your prompt into the title field" flow: the user
+  // chats with the AI in a dedicated box. First message (when there's no
+  // content yet) drafts a whole new blog post; later messages are treated
+  // as suggestions/instructions to revise the content that's already there.
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
 
   const addPreviewUrl = useCallback((url) => {
     if (url) previewUrls.current.add(url);
@@ -106,48 +114,12 @@ const AddBlog = ({ onSuccess, onCancel, isOpen, onClose }) => {
     return cleanupPreviews;
   }, [isOpen, cleanupPreviews]);
 
-  // ============ AUTO-GENERATE OUTLINE ON TITLE CHANGE ============
+  // Auto-scroll the chat box to the latest message
   useEffect(() => {
-    // Clear any existing timeout
-    if (autoGenerateTimeoutRef.current) {
-      clearTimeout(autoGenerateTimeoutRef.current);
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
     }
-
-    // Only auto-generate if title is long enough, no content exists, and it hasn't been generated yet
-    if (
-      formData.title && 
-      formData.title.length > 3 && 
-      !formData.content &&
-      !aiLoading.outline &&
-      !outlineGeneratedRef.current &&
-      !isAutoGeneratingRef.current // Check ref flag to prevent focus issues
-    ) {
-      // Set flag to prevent focus issues
-      isAutoGeneratingRef.current = true;
-      
-      autoGenerateTimeoutRef.current = setTimeout(() => {
-        handleGenerateOutline();
-        // Reset flag after generation
-        setTimeout(() => {
-          isAutoGeneratingRef.current = false;
-        }, 500);
-      }, 2000); // Increased delay to 2 seconds
-    }
-    
-    // Reset flag when content is added manually
-    if (formData.content && outlineGeneratedRef.current) {
-      outlineGeneratedRef.current = false;
-      isAutoGeneratingRef.current = false;
-    }
-
-    return () => {
-      if (autoGenerateTimeoutRef.current) {
-        clearTimeout(autoGenerateTimeoutRef.current);
-      }
-      // Clean up flag on unmount
-      isAutoGeneratingRef.current = false;
-    };
-  }, [formData.title, formData.content, aiLoading.outline]);
+  }, [chatMessages, chatLoading]);
 
   // ============ AI FUNCTIONS ============
 
@@ -343,59 +315,85 @@ const AddBlog = ({ onSuccess, onCancel, isOpen, onClose }) => {
     return html;
   };
 
-  const handleGenerateOutline = async () => {
-    if (!formData.title) {
-      setError('Please enter a topic/title first');
-      return;
-    }
+  // Sends the chat box message to the AI. If there's no blog content yet,
+  // the message is used as the topic/prompt to draft a whole new post
+  // (title, description, content, SEO fields, etc). Once content exists,
+  // every further message is treated as a suggestion/instruction and only
+  // the content in the editor is revised.
+  const handleChatSend = async () => {
+    const message = chatInput.trim();
+    if (!message || chatLoading) return;
 
-    // Prevent multiple simultaneous generations
-    if (aiLoading.outline) return;
-
+    setChatMessages(prev => [...prev, { role: 'user', text: message }]);
+    setChatInput('');
+    setChatLoading(true);
     setAiLoading(prev => ({ ...prev, outline: true }));
+
     try {
-      const response = await blogAPI.aiGenerateOutline(
-        formData.title,
-        formData.category
-      );
-      
+      const response = await blogAPI.aiChatEdit(message, formData.content, formData.category);
+
       if (response.data.success) {
-        const outline = response.data.data;
-        const content = buildOutlineHtml(outline);
-        
-        setFormData(prev => ({
-          ...prev,
-          title: outline.title || prev.title,
-          category: prev.category || outline.suggestedCategory || prev.category,
-          description: prev.description || outline.shortDescription || prev.description,
-          content: content,
-          excerpt: prev.excerpt || (outline.introduction ? outline.introduction.substring(0, 250) + '...' : prev.excerpt),
-          imageAlt: prev.imageAlt || outline.imageAltText || prev.imageAlt,
-          metaKeywords: prev.metaKeywords || (Array.isArray(outline.metaKeywords) ? outline.metaKeywords.join(', ') : prev.metaKeywords),
-          metaTitle: prev.metaTitle || (outline.title ? outline.title.substring(0, 65) : prev.metaTitle),
-          metaDescription: prev.metaDescription || (outline.introduction ? outline.introduction.substring(0, 155) : prev.metaDescription),
-          ogTitle: prev.ogTitle || (outline.title ? outline.title : prev.ogTitle),
-          ogDescription: prev.ogDescription || (outline.introduction ? outline.introduction.substring(0, 155) : prev.ogDescription)
-        }));
-        
-        if (outline.title) {
-          setCharCount(prev => ({
+        const { mode, outline, content } = response.data.data;
+
+        if (mode === 'generate' && outline) {
+          const html = buildOutlineHtml(outline);
+
+          setFormData(prev => ({
             ...prev,
-            title: outline.title.length,
-            metaTitle: outline.title.substring(0, 65).length
+            title: outline.title || prev.title,
+            category: prev.category || outline.suggestedCategory || prev.category,
+            description: prev.description || outline.shortDescription || prev.description,
+            content: html,
+            excerpt: prev.excerpt || (outline.introduction ? outline.introduction.substring(0, 250) + '...' : prev.excerpt),
+            imageAlt: prev.imageAlt || outline.imageAltText || prev.imageAlt,
+            metaKeywords: prev.metaKeywords || (Array.isArray(outline.metaKeywords) ? outline.metaKeywords.join(', ') : prev.metaKeywords),
+            metaTitle: prev.metaTitle || (outline.title ? outline.title.substring(0, 65) : prev.metaTitle),
+            metaDescription: prev.metaDescription || (outline.introduction ? outline.introduction.substring(0, 155) : prev.metaDescription),
+            ogTitle: prev.ogTitle || (outline.title ? outline.title : prev.ogTitle),
+            ogDescription: prev.ogDescription || (outline.introduction ? outline.introduction.substring(0, 155) : prev.ogDescription)
           }));
+
+          if (outline.title) {
+            setCharCount(prev => ({
+              ...prev,
+              title: outline.title.length,
+              metaTitle: outline.title.substring(0, 65).length
+            }));
+          }
+
+          setChatMessages(prev => [...prev, {
+            role: 'ai',
+            text: `I've drafted "${outline.title}" for you. Keep chatting here with any changes you'd like — tone, extra sections, shorter, etc.`
+          }]);
+        } else if (mode === 'revise' && content) {
+          setFormData(prev => ({ ...prev, content }));
+          setChatMessages(prev => [...prev, {
+            role: 'ai',
+            text: "Done — I've updated the content based on your suggestion."
+          }]);
+        } else {
+          setChatMessages(prev => [...prev, {
+            role: 'ai',
+            text: "I couldn't quite process that — could you rephrase it?"
+          }]);
         }
-        
-        setError('✅ Outline generated successfully!');
-        setTimeout(() => setError(''), 3000);
       }
     } catch (err) {
-      console.error('Outline generation error:', err);
-      setError(err.response?.data?.message || 'Failed to generate outline');
+      console.error('AI chat error:', err);
+      setChatMessages(prev => [...prev, {
+        role: 'ai',
+        text: err.response?.data?.message || 'Something went wrong on my end. Please try again.'
+      }]);
     } finally {
+      setChatLoading(false);
       setAiLoading(prev => ({ ...prev, outline: false }));
-      // Reset auto-generate flag
-      isAutoGeneratingRef.current = false;
+    }
+  };
+
+  const handleChatKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleChatSend();
     }
   };
 
@@ -656,13 +654,10 @@ const AddBlog = ({ onSuccess, onCancel, isOpen, onClose }) => {
   const resetForm = () => {
     removeImage();
     removeOgImage();
-    outlineGeneratedRef.current = false;
-    isAutoGeneratingRef.current = false; // Reset the ref
-    
-    if (autoGenerateTimeoutRef.current) {
-      clearTimeout(autoGenerateTimeoutRef.current);
-    }
-    
+    setChatMessages([]);
+    setChatInput('');
+    setChatLoading(false);
+
     setFormData({
       title: '',
       description: '',
@@ -794,6 +789,83 @@ const AddBlog = ({ onSuccess, onCancel, isOpen, onClose }) => {
           )}
 
           <div className="space-y-4">
+            {/* AI Chat Box */}
+            <div className="border border-purple-200 rounded-xl overflow-hidden bg-white">
+              <div
+                className="flex items-center justify-between px-4 py-3 bg-purple-50 cursor-pointer border-b border-purple-200"
+                onClick={() => toggleSection('aiChat')}
+              >
+                <h3 className="text-sm font-medium text-purple-700 flex items-center">
+                  <Sparkles size={16} className="mr-2 text-purple-500" />
+                  AI Assistant
+                </h3>
+                {expandedSections.aiChat ? <ChevronUp size={16} className="text-purple-500" /> : <ChevronDown size={16} className="text-purple-500" />}
+              </div>
+
+              {expandedSections.aiChat && (
+                <div className="p-4 space-y-3">
+                  <p className="text-xs text-gray-500">
+                    {formData.content
+                      ? 'Tell the AI what to change — e.g. "make the intro shorter" or "add a section about pricing".'
+                      : 'Describe the blog post you want and the AI will draft the title, content, and SEO fields for you.'}
+                  </p>
+
+                  <div className="max-h-64 overflow-y-auto space-y-2 pr-1">
+                    {chatMessages.length === 0 && (
+                      <div className="text-xs text-gray-400 italic px-1">
+                        No messages yet — type a topic below to get started, e.g. "Write a blog about budget travel in Kerala".
+                      </div>
+                    )}
+                    {chatMessages.map((msg, idx) => (
+                      <div
+                        key={idx}
+                        className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                      >
+                        <div
+                          className={`max-w-[85%] px-3 py-2 rounded-lg text-xs whitespace-pre-wrap ${
+                            msg.role === 'user'
+                              ? 'bg-[#f96b06] text-white rounded-br-none'
+                              : 'bg-purple-50 text-purple-900 rounded-bl-none border border-purple-100'
+                          }`}
+                        >
+                          {msg.text}
+                        </div>
+                      </div>
+                    ))}
+                    {chatLoading && (
+                      <div className="flex justify-start">
+                        <div className="max-w-[85%] px-3 py-2 rounded-lg text-xs bg-purple-50 text-purple-500 border border-purple-100 flex items-center gap-1">
+                          <Loader2 size={12} className="animate-spin" />
+                          {formData.content ? 'Updating content...' : 'Drafting your blog...'}
+                        </div>
+                      </div>
+                    )}
+                    <div ref={chatEndRef} />
+                  </div>
+
+                  <div className="flex items-end gap-2">
+                    <textarea
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      onKeyDown={handleChatKeyDown}
+                      disabled={chatLoading}
+                      rows={2}
+                      placeholder={formData.content ? 'Suggest a change to the content...' : 'What should this blog be about?'}
+                      className="flex-1 px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-purple-400 focus:border-purple-400 text-sm resize-none disabled:opacity-50"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleChatSend}
+                      disabled={chatLoading || !chatInput.trim()}
+                      className="inline-flex items-center px-4 py-2 text-xs font-medium text-white bg-purple-500 rounded-lg hover:bg-purple-600 disabled:opacity-50 transition-colors h-[38px]"
+                    >
+                      {chatLoading ? <Loader2 size={14} className="animate-spin" /> : 'Send'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* Basic Information */}
             <div className="border border-gray-200 rounded-xl overflow-hidden bg-white">
               <div 
@@ -828,23 +900,6 @@ const AddBlog = ({ onSuccess, onCancel, isOpen, onClose }) => {
                       placeholder="Enter blog title"
                       onBlur={generateSEOFIelds}
                     />
-                    <p className="text-xs text-gray-400 mt-1">
-                      {formData.title && !formData.content && !aiLoading.outline ? '⏳ AI will generate outline automatically...' : ''}
-                      {aiLoading.outline ? '⏳ Generating outline...' : ''}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={handleGenerateOutline}
-                      disabled={aiLoading.outline}
-                      className="mt-2 inline-flex items-center px-3 py-1.5 text-xs font-medium text-white bg-purple-500 rounded-lg hover:bg-purple-600 disabled:opacity-50 transition-colors"
-                    >
-                      {aiLoading.outline ? (
-                        <Loader2 size={14} className="animate-spin mr-1" />
-                      ) : (
-                        <Sparkles size={14} className="mr-1" />
-                      )}
-                      Generate Outline with AI
-                    </button>
                   </div>
 
                   <div>

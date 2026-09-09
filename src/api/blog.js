@@ -77,5 +77,12 @@ export const blogAPI = {
   // NEW: Generate both images at once
   aiGenerateAllImages: (title, description) => {
     return api.post('/blogs/ai/generate-all-images', { title, description });
+  },
+
+  // NEW: AI chat box - single endpoint used both to generate a fresh blog
+  // from a chat prompt (when there's no content yet) and to revise the
+  // existing content based on a follow-up chat instruction.
+  aiChatEdit: (prompt, content, category) => {
+    return api.post('/blogs/ai/chat', { prompt, content, category });
   }
 };
