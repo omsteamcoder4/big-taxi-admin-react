@@ -18,6 +18,7 @@ import SEOAdmin from './pages/SEOAdmin';
 import FleetsAdmin from './pages/Fleets';
 import GeoSeo from './pages/GeoSeo';
 import AeoSeo from './pages/AeoSeo';
+import Analytics from './pages/Analytics';
 
 function App() {
   return (
@@ -122,6 +123,15 @@ function App() {
                 </ProtectedRoute>
               } 
             />
+
+            <Route
+  path="/analytics"
+  element={
+    <ProtectedRoute adminOnly={true}>
+      <Analytics />
+    </ProtectedRoute>
+  }
+/>
             
             {/* Default redirect */}
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
