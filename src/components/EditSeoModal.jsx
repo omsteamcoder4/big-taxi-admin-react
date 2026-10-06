@@ -879,7 +879,7 @@ const EditSeoModal = ({ isOpen, onClose, onEditSeo, seoData }) => {
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-gray-600 mb-1">Business Phone</label>
-                    <input type="text" name="businessPhone" value={formData.businessPhone} onChange={handleInputChange} className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm" placeholder="+91 6381188591" />
+                    <input type="text" name="businessPhone" value={formData.businessPhone} onChange={handleInputChange} className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm" placeholder="+91 6379828716" />
                   </div>
                 </div>
                 <div>
